@@ -1,0 +1,230 @@
+﻿@page
+@using Newtonsoft.Json
+@model SnowRoutesApp.Pages.IndexModel
+
+<h1>Optimización de Rutas de Quitanieves</h1>
+
+<form method="post">
+    <label for="start">Nodo de inicio:</label>
+    <input type="text" id="start" name="Start" placeholder="Ejemplo: A" required />
+
+    <label for="end">Nodo de destino:</label>
+    <input type="text" id="end" name="End" placeholder="Ejemplo: D" required />
+
+    <button type="submit">Calcular Ruta</button>
+</form>
+
+<div id="map" style="height: 500px; width: 100%; margin-top: 20px;"></div>
+
+@if (Model.Measurements.Count > 0)
+{
+    <h2>Mediciones:</h2>
+    <ul>
+        @foreach (var measurement in Model.Measurements)
+        {
+            <li>
+                @measurement.StartNode -> @measurement.EndNode: 
+                @measurement.Distance km
+                <form method="post" action="@Url.Page("/Index", "DeleteMeasurement")">
+                    <input type="hidden" name="index" value="@Model.Measurements.IndexOf(measurement)" />
+                    <button type="submit">Eliminar Medición</button>
+                </form>
+            </li>
+        }
+    </ul>
+}
+
+<h2>Distancias de las Rutas</h2>
+<table id="distanceTable" border="1" style="width: 100%; margin-top: 20px;">
+    <thead>
+        <tr>
+            <th>Ruta</th>
+            <th>Distancia (km)</th>
+        </tr>
+    </thead>
+    <tbody>
+        <!-- Las distancias se agregarán aquí dinámicamente -->
+    </tbody>
+</table>
+
+<script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+
+<script>
+    var map = L.map('map').setView([40.4168, -3.7038], 6); // Coordenadas iniciales (por ejemplo, España)
+
+    // Añadir capa de mapa base
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    }).addTo(map);
+
+    var markers = []; // Array para almacenar los marcadores
+    var routeLayers = []; // Array para almacenar las rutas trazadas
+    var vehicleMarkers = [];  // Array para los vehículos en movimiento
+    var vehicleSpeed = 50;    // Velocidad en metros por segundo (ajustar según sea necesario)
+    var vehicleIcon = L.icon({
+    iconUrl: '/images/snowplow.png', // Ruta relativa desde la raíz del servidor
+        iconSize: [32, 32],
+        iconAnchor: [16, 16]
+    });
+
+    // Evento de clic en el mapa
+    map.on('click', function(e) {
+        var lat = e.latlng.lat;
+        var lng = e.latlng.lng;
+
+        // Crear marcador en el mapa
+        var marker = L.marker([lat, lng]).addTo(map);
+
+        // Crear contenido del popup
+        var popupContent = `Coordenadas: ${lat.toFixed(4)}, ${lng.toFixed(4)} `;
+        marker.bindPopup(popupContent).openPopup();
+
+        // Almacenar el marcador y sus coordenadas
+        markers.push({ lat: lat, lng: lng, marker: marker });
+
+        // Si tenemos más de un marcador, calculamos la ruta entre el primero y el último
+        if (markers.length > 1) {
+            calculateRoute(markers[0], markers[markers.length - 1]);
+        }
+    });
+
+    // Función para calcular la ruta entre el primer y último marcador
+    function calculateRoute(marker1, marker2) {
+        var url = 'https://api.openrouteservice.org/v2/directions/driving-car';
+        var apiKey = '5b3ce3597851110001cf6248fc4f6778d3674432a96b1c40faa5159a'; // Sustituye con tu clave API real
+
+        var coordinates = [
+            [marker1.lng, marker1.lat], // Origen
+            [marker2.lng, marker2.lat]  // Destino
+        ];
+
+        fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': apiKey // Aquí se pasa la clave de API correctamente
+            },
+            body: JSON.stringify({
+                coordinates: coordinates,
+                format: 'geojson'
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            console.log("Respuesta de la API:", data);
+
+            if (data.routes && data.routes.length > 0) {
+                var route = data.routes[0];
+                if (route.geometry) {
+                    var decodedGeometry = decodePolyline(route.geometry); // Función de decodificación
+                    var routeLayer = L.polyline(decodedGeometry, { color: 'blue', weight: 5 }).addTo(map);
+                    routeLayers.push(routeLayer);
+
+                    var routeDistance = route.summary.distance / 1000; // Convertir a km
+                    var tableBody = document.querySelector("#distanceTable tbody");
+                    var row = document.createElement("tr");
+                    var routeCell = document.createElement("td");
+                    routeCell.textContent = `${marker1.lat.toFixed(4)}, ${marker1.lng.toFixed(4)} -> ${marker2.lat.toFixed(4)}, ${marker2.lng.toFixed(4)}`;
+                    var distanceCell = document.createElement("td");
+                    distanceCell.textContent = routeDistance.toFixed(2);
+                    row.appendChild(routeCell);
+                    row.appendChild(distanceCell);
+                    tableBody.appendChild(row);
+
+                    // Mover el vehículo a lo largo de la ruta
+                    moveVehicleAlongRoute(decodedGeometry);
+                } else {
+                    console.error("GeoJSON inválido o sin geometría esperada.");
+                    alert("No se pudo procesar la ruta, formato GeoJSON inválido.");
+                }
+            } else {
+                alert("No se pudo calcular la ruta. Respuesta inesperada.");
+            }
+        })
+        .catch(error => {
+            console.error('Error al calcular la ruta:', error);
+            alert("Ocurrió un error al calcular la ruta.");
+        });
+    }
+
+    // Función para mover el vehículo a lo largo de la ruta
+    function moveVehicleAlongRoute(routeGeometry) {
+        var vehicleMarker = L.marker(routeGeometry[0], {icon: vehicleIcon}).addTo(map);
+        vehicleMarkers.push(vehicleMarker);
+
+        var currentIndex = 0;
+        var totalPoints = routeGeometry.length;
+
+        function move() {
+            if (currentIndex < totalPoints - 1) {
+                var nextPoint = routeGeometry[currentIndex + 1];
+                var currentPosition = vehicleMarker.getLatLng();
+                var distance = map.distance(currentPosition, nextPoint);
+
+                var timeToMove = distance / vehicleSpeed * 1000;  // Tiempo en milisegundos
+                vehicleMarker.setLatLng(nextPoint);
+                currentIndex++;
+                setTimeout(move, timeToMove);
+            }
+        }
+
+        move();  // Iniciar el movimiento
+    }
+
+    // Función para decodificar la geometría Polyline codificada
+    function decodePolyline(encoded) {
+        var precision = 1e5;
+        var index = 0;
+        var len = encoded.length;
+        var lat = 0;
+        var lng = 0;
+        var points = [];
+
+        while (index < len) {
+            var b, shift = 0, result = 0;
+            do {
+                b = encoded.charCodeAt(index++) - 63;
+                result |= (b & 0x1f) << shift;
+                shift += 5;
+            } while (b >= 0x20);
+            var deltaLat = ((result & 1) ? ~(result >> 1) : (result >> 1));
+            lat += deltaLat;
+
+            shift = 0;
+            result = 0;
+            do {
+                b = encoded.charCodeAt(index++) - 63;
+                result |= (b & 0x1f) << shift;
+                shift += 5;
+            } while (b >= 0x20);
+            var deltaLng = ((result & 1) ? ~(result >> 1) : (result >> 1));
+            lng += deltaLng;
+
+            points.push([lat / precision, lng / precision]);
+        }
+
+        return points;
+    }
+
+    // Eliminar un marcador con doble clic
+    map.on('dblclick', function(e) {
+        var closestMarker = null;
+        var closestDistance = Infinity;
+
+        markers.forEach(function(markerObj) {
+            var dist = map.distance(e.latlng, markerObj.marker.getLatLng());
+            if (dist < closestDistance) {
+                closestDistance = dist;
+                closestMarker = markerObj;
+            }
+        });
+
+        if (closestMarker) {
+            map.removeLayer(closestMarker.marker);
+            markers = markers.filter(function(markerObj) {
+                return markerObj !== closestMarker;
+            });
+        }
+    });
+
+</script>

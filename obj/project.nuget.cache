@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "dgSpecHash": "3/iPuKspgxI=",
+  "success": true,
+  "projectFilePath": "c:\\Users\\Juanma\\Desktop\\SnowRoutesApp\\SnowRoutesApp.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\Juanma\\.nuget\\packages\\newtonsoft.json\\13.0.3\\newtonsoft.json.13.0.3.nupkg.sha512"
+  ],
+  "logs": []
+}
